@@ -1,0 +1,45 @@
+name: Verify
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]   # pushes to main are verified by the deploy workflow
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # Geometry the eye would catch but a colour checker cannot: overlapping
+      # boxes, labels wider than their box, connectors cutting through
+      # unrelated components, stacked anchors, dangling references, and the
+      # d3 subresource-integrity hash matching the version we test against.
+      - name: Layout audit
+        run: node tests/audit.mjs
+
+      # Drives every control in jsdom and asserts the DOM changed.
+      - name: Interaction tests
+        run: node tests/smoke.mjs
+
+      # Useful when reviewing a layout change: download and look at it.
+      - name: Render snapshots
+        run: npm run snapshot
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: layout-snapshots
+          path: build/*.svg
+          if-no-files-found: warn

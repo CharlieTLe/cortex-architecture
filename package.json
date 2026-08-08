@@ -1,0 +1,20 @@
+{
+  "name": "cortex-architecture",
+  "version": "1.0.0",
+  "private": true,
+  "description": "An unofficial interactive diagram of the Cortex architecture",
+  "type": "module",
+  "scripts": {
+    "test": "node tests/audit.mjs && node tests/smoke.mjs",
+    "snapshot": "node tests/audit.mjs --snapshot"
+  },
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/CharlieTLe/cortex-architecture.git"
+  },
+  "devDependencies": {
+    "d3": "7.9.0",
+    "jsdom": "^29.1.1"
+  }
+}

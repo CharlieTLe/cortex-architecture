@@ -1,0 +1,25 @@
+Cortex architecture — interactive diagram
+Copyright 2026 Charlie Le
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This is an unofficial, independently maintained diagram. It is not part of the
+Cortex project and is not endorsed by it.
+
+The diagram's content — component names, roles, hash ring keys and prefixes,
+endpoints, and the descriptions of the write, read and rule-evaluation paths —
+is derived from the source code and documentation of the Cortex project:
+
+    Cortex
+    https://github.com/cortexproject/cortex
+    Copyright The Cortex Authors
+    Licensed under the Apache License, Version 2.0
+
+Cortex is a project of the Cloud Native Computing Foundation.
+
+This page loads D3 at runtime from a CDN:
+
+    D3
+    https://github.com/d3/d3
+    Copyright Mike Bostock
+    Licensed under the ISC License
