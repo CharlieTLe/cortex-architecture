@@ -169,6 +169,31 @@ click([...q("#ruler-mode button")].find(b => b.dataset.mode === "own"));
 ok("own-stack mode restores the direct reads", shown("ruler>ing") && shown("ruler>sg"));
 ok("own-stack mode hides the frontend hop", !shown("ruler>qf"));
 
+/* ---- rule & alert config store ------------------------------------------ */
+// The object-storage stores and the Configs API (configdb) backends are mutually
+// exclusive, so exactly one pair of edges should ever be drawn.
+ok("object storage is the default config store",
+  shown("ruler>obj") && shown("am>obj") && !shown("ruler>configs") && !shown("am>configs"));
+ok("the Configs API recedes when unused",
+  cls('g.node[data-id="configs"]').includes("dim") && cls('g.node[data-id="postgres"]').includes("dim"));
+click([...q("#config-store button")].find(b => b.dataset.mode === "configdb"));
+ok("configdb shows the ruler and alertmanager polling the Configs API",
+  shown("ruler>configs") && shown("am>configs"));
+ok("configdb hides the object-storage config reads",
+  !shown("ruler>obj") && !shown("am>obj"));
+ok("configdb lights up the Configs API and its database",
+  !cls('g.node[data-id="configs"]').includes("dim") && !cls('g.node[data-id="postgres"]').includes("dim"));
+click([...q("#config-store button")].find(b => b.dataset.mode === "objstore"));
+ok("switching back restores the object-storage config reads",
+  shown("ruler>obj") && shown("am>obj") && !shown("ruler>configs"));
+
+/* ---- metadata cache ------------------------------------------------------ */
+// Three consumers, which is the whole point of showing it separately.
+ok("all three metadata-cache consumers are wired",
+  shown("qr>mcache") && shown("sg>mcache") && shown("comp>mcache"));
+ok("the metadata cache is a distinct component from the chunk cache",
+  !!one('g.node[data-id="metadata-cache"]') && !!one('g.node[data-id="chunk-cache"]'));
+
 /* ---- selection panel ---------------------------------------------------- */
 const panel = one("#panel");
 const ing = one('g.node[data-id="ingester"]');

@@ -324,6 +324,14 @@
     </div>
 
     <div class="group">
+      <span class="label" id="lbl-cfg">Rule &amp; alert configs from</span>
+      <div class="seg" id="config-store" role="group" aria-labelledby="lbl-cfg">
+        <button type="button" data-mode="objstore" aria-pressed="true">Object storage</button>
+        <button type="button" data-mode="configdb" aria-pressed="false">Configs API</button>
+      </div>
+    </div>
+
+    <div class="group">
       <span class="label" id="lbl-flow">Walk a flow</span>
       <div class="chips" id="flows" role="group" aria-labelledby="lbl-flow"></div>
     </div>
@@ -340,7 +348,7 @@
 
   <div class="stage">
     <div class="canvas">
-      <svg class="diagram" id="svg" viewBox="0 0 1300 880"
+      <svg class="diagram" id="svg" viewBox="0 0 1300 900"
            preserveAspectRatio="xMidYMid meet" role="img"
            aria-label="Node-link diagram of Cortex components and the data flows between them.
                        An equivalent table is available via the table view toggle."></svg>
@@ -473,20 +481,21 @@ const NODES = [
     ring: { prefix: "rulers/", key: "ring" },
     status: "/ruler/ring", src: "pkg/ruler/ruler.go", anchor: "ruler",
     role: "Optional. Evaluates recording and alerting rules, writing results back through the distributor and pushing alerts to the Alertmanager.",
-    detail: "Owns rule groups through its own ring and evaluates only what it owns. By default it builds its own querier stack and reads ingesters and store-gateways directly; with -ruler.frontend-address it sends queries to the query-frontend instead, picking up splitting and caching. Note its ring shares the key \"ring\" with the ingester and is told apart only by the rulers/ KV prefix.",
+    detail: "Owns rule groups through its own ring and evaluates only what it owns. By default it builds its own querier stack and reads ingesters and store-gateways directly; with -ruler.frontend-address it sends queries to the query-frontend instead, picking up splitting and caching. The rule store is object storage by default, or the deprecated Configs API with -ruler-storage.backend=configdb, which is read-only. Note its ring shares the key \"ring\" with the ingester and is told apart only by the rulers/ KV prefix.",
     endpoints: ["GET /prometheus/api/v1/rules", "GET /prometheus/api/v1/alerts", "gRPC Ruler.Rules", "GET /ruler/ring"] },
   { id: "alertmanager", label: "Alertmanager", cat: "optional", x: 160, y: 215,
     state: "semi-stateful", optional: true, target: "alertmanager",
     ring: { prefix: "alertmanagers/", key: "alertmanager" },
     status: "/multitenant_alertmanager/ring", src: "pkg/alertmanager/multitenant.go", anchor: "alertmanager",
     role: "Optional. Accepts alert notifications from the ruler, deduplicates and groups them, and routes them to the right notification channel.",
-    detail: "The Prometheus Alertmanager plus multi-tenancy. Silences and active alerts are persisted to disk and gossiped between replicas, so a simultaneous loss of every replica loses data.",
+    detail: "The Prometheus Alertmanager plus multi-tenancy. Silences and active alerts are persisted to disk and gossiped between replicas, so a simultaneous loss of every replica loses data. Per-tenant configs come from object storage by default, or from the deprecated Configs API with -alertmanager-storage.backend=configdb — which is read-only and cannot persist full state at all.",
     endpoints: ["gRPC Alertmanager.HandleRequest / UpdateState / ReadState", "GET /multitenant_alertmanager/ring"] },
   { id: "configs", label: "Configs API", cat: "optional", x: 160, y: 590,
     state: "stateless", optional: true, target: "configs",
     src: "pkg/configs/api/api.go", anchor: "configs-api",
-    role: "Optional. Gets, sets and updates ruler and alertmanager configuration.",
-    detail: "The only Cortex component backed by a relational database rather than object storage. Backends are PostgreSQL and in-memory." },
+    role: "Optional and deprecated. Gets, sets and updates ruler and alertmanager configuration, which those two then poll back out of it.",
+    detail: "The only Cortex component backed by a relational database rather than object storage; backends are PostgreSQL and in-memory. Only reachable by the ruler and Alertmanager when they are configured with the configdb backend, which is why it recedes in the default topology. The pair of /private/ endpoints are the ones those components poll; the public /api/prom/configs/ routes are the management API.",
+    endpoints: ["GET /private/api/prom/configs/rules", "GET /private/api/prom/configs/alertmanager", "GET · POST /api/prom/configs/rules", "GET · POST /api/prom/configs/alertmanager"] },
 
   /* ---- infrastructure ---- */
   { id: "kv", label: "Ring KV store", sub: "Consul · etcd · memberlist",
@@ -500,9 +509,14 @@ const NODES = [
   { id: "results-cache", label: "Results cache", sub: "memcached · redis",
     cat: "infra", x: 1187, y: 215, w: 150,
     role: "Caches query-frontend results. Step-aligning queries makes them far more cacheable." },
-  { id: "chunk-cache", label: "Chunk cache", sub: "index · chunks",
+  { id: "chunk-cache", label: "Index & chunks", sub: "postings · chunks",
     cat: "infra", x: 1187, y: 590, w: 150,
-    role: "Caches block index-headers and chunks so the store-gateway does fewer object-storage round trips." },
+    role: "Two caches sitting in front of the blocks: the index cache holds postings and series, the chunks cache holds chunk byte ranges.",
+    detail: "The index cache is store-gateway only (-blocks-storage.bucket-store.index-cache). The chunks cache is shared — the querier configures it too, alongside the parquet-labels cache when the parquet queryable is enabled." },
+  { id: "metadata-cache", label: "Metadata cache", sub: "meta.json · listings",
+    cat: "infra", x: 1187, y: 800, w: 150,
+    role: "Caches the bucket's metadata operations, so working out which blocks exist does not mean listing object storage over and over.",
+    detail: "Holds meta.json content, existence and attributes, the block index's attributes, the bucket index, and the tenant, block and chunk listings — plus the compactor's partitioned-group listings. Configured under -blocks-storage.bucket-store.metadata-cache; backends are in-memory, memcached or redis, and can be stacked into levels. The bucket index is cached by content only: its existence deliberately is not, so a freshly written index gets picked up promptly." },
   { id: "postgres", label: "PostgreSQL", cat: "infra", x: 160, y: 800, w: 150,
     role: "Backing store for the Configs API." },
 ];
@@ -600,15 +614,30 @@ const EDGES = [
     protocol: "object storage API", endpoint: "read + write",
     note: "Downloads TSDB blocks and writes parquet shards beside them." },
   { id: "ruler>obj", from: "ruler", to: "objstore", path: "blocks",
-    fromSide: "right", toSide: "top", toOff: -60,
+    fromSide: "right", toSide: "top", toOff: -60, configStore: "objstore",
     route: [[330, 465], [330, 724], [635, 724]],
     protocol: "object storage API", endpoint: "rules/<tenant>/<namespace>/",
     note: "Rule groups are loaded from — and written to — the rule store." },
   { id: "am>obj", from: "alertmanager", to: "objstore", path: "blocks",
-    fromSide: "left", toSide: "top", toOff: -90,
-    route: [[52, 215], [52, 746], [605, 746]],
+    fromSide: "left", toSide: "top", toOff: -90, configStore: "objstore",
+    route: [[48, 215], [48, 746], [605, 746]],
     protocol: "object storage API", endpoint: "alerts/<tenant> · alertmanager/<tenant>/",
     note: "Per-tenant configuration, plus full and gossiped notification state." },
+  { id: "qr>mcache", from: "querier", to: "metadata-cache", path: "blocks",
+    fromSide: "right", fromOff: 13, toSide: "left", toOff: -13,
+    route: [[1090, 478], [1090, 787]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Block metadata and the bucket index, so planning a query does not mean re-listing the bucket." },
+  { id: "sg>mcache", from: "store-gateway", to: "metadata-cache", path: "blocks",
+    fromSide: "right", fromOff: 13, toSide: "left", toOff: 13,
+    route: [[1075, 603], [1075, 813]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "The store-gateway shares this cache with the querier and the compactor — all three discover blocks through it." },
+  { id: "comp>mcache", from: "compactor", to: "metadata-cache", path: "blocks",
+    fromSide: "bottom", toSide: "bottom",
+    route: [[400, 868], [1187, 868]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "The compactor and its blocks cleaner cache tenant and block listings, meta.json attributes, and partitioned-group listings." },
   { id: "sg>ccache", from: "store-gateway", to: "chunk-cache", path: "blocks",
     fromSide: "right", toSide: "left",
     protocol: "memcached / redis", endpoint: "read + write",
@@ -643,6 +672,15 @@ const EDGES = [
     fromSide: "bottom", toSide: "top",
     protocol: "SQL", endpoint: "PostgreSQL",
     note: "Ruler and alertmanager configuration. The only relational store in Cortex." },
+  { id: "ruler>configs", from: "ruler", to: "configs", path: "ring",
+    fromSide: "bottom", fromOff: -20, toSide: "top", toOff: -20, configStore: "configdb",
+    protocol: "HTTP GET", endpoint: "/private/api/prom/configs/rules",
+    note: "With -ruler-storage.backend=configdb the ruler polls the Configs API for rule groups instead of reading them from object storage. Read-only: rule groups cannot be modified through the ruler's own API." },
+  { id: "am>configs", from: "alertmanager", to: "configs", path: "ring",
+    fromSide: "left", toSide: "left", configStore: "configdb",
+    route: [[64, 215], [64, 590]],
+    protocol: "HTTP GET", endpoint: "/private/api/prom/configs/alertmanager",
+    note: "With -alertmanager-storage.backend=configdb the Alertmanager polls the Configs API for per-tenant configs. Read-only — and full state is unsupported, so silences and the notification log cannot be persisted." },
 ];
 
 /* Guided flows. Steps reference edge ids; the read flow adapts to the queue
@@ -670,7 +708,9 @@ const FLOWS = [
     ] },
   { id: "rules", label: "Rule evaluation", steps: (s) => [
       ["ruler>kv", "The ruler consults its own ring to decide which rule groups it owns, and evaluates only those."],
-      ["ruler>obj", "It loads those groups from the rule store in object storage."],
+      ...(s.configStore === "configdb"
+        ? [["ruler>configs", "It polls the Configs API for those groups. That backend is read-only, so rules are managed through the Configs API itself rather than the ruler."]]
+        : [["ruler>obj", "It loads those groups from the rule store in object storage."]]),
       ...(s.rulerMode === "own"
         ? [["ruler>ing", "Evaluating a rule means running a query. By default the ruler has its own querier stack and reads ingesters directly."],
            ["ruler>sg",  "...and store-gateways for anything already flushed to blocks."]]
@@ -684,6 +724,7 @@ const FLOWS = [
       ["comp>obj", "The compactor merges small blocks into larger ones, dropping replicated duplicates, shrinking the index, and refreshing the per-tenant bucket index."],
       ["sg>obj",   "Store-gateways discover the blocks in their shard — from that bucket index, or by scanning the bucket — and lazily load index-headers and chunks."],
       ["qr>obj",   "Queriers read the same bucket index to plan which blocks a query needs."],
+      ["sg>mcache", "Block discovery goes through the metadata cache rather than re-listing the bucket — the querier, the store-gateway and the compactor all share it."],
       ["sg>ccache", "Store-gateways cache index-headers and chunks so repeated queries avoid the object store entirely."],
     ] },
 ];
@@ -711,6 +752,7 @@ const PATH_LABEL = {
 const state = {
   feMode: "v2",
   rulerMode: "own",
+  configStore: "objstore",
   visible: new Set(["write", "read", "blocks", "ring"]),
   selected: null,
   hovered: null,
@@ -830,12 +872,12 @@ lane.append("rect")
   .attr("width", d => d.x1 - d.x0).attr("height", d => d.y1 - d.y0)
   .attr("rx", 12);
 lane.append("text")
-  // The horizontal band labels itself inside and right-aligned: above it is
-  // where the object-storage approach runs travel, and its left end is crossed
-  // by the Configs API link down to PostgreSQL.
-  .attr("x", d => d.inside ? d.x1 - 14 : d.x0 + 12)
-  .attr("y", d => d.inside ? d.y0 + 17 : d.y0 - 9)
-  .attr("text-anchor", d => d.inside ? "end" : "start")
+  // The horizontal band labels itself along its own bottom edge. Above the band
+  // is where the object-storage approach runs travel; its top-left is crossed by
+  // the Configs API link down to PostgreSQL, and its top-right is where the
+  // metadata cache sits.
+  .attr("x", d => d.x0 + 12)
+  .attr("y", d => d.inside ? d.y1 - 9 : d.y0 - 9)
   .text(d => d.label);
 
 /* edges ---------------------------------------------------------------- */
@@ -917,6 +959,7 @@ function flowSteps() {
 function edgeActive(e) {
   if (e.mode && e.mode !== state.feMode) return false;
   if (e.rulerMode && e.rulerMode !== state.rulerMode) return false;
+  if (e.configStore && e.configStore !== state.configStore) return false;
   // A walkthrough overrides the filter row: otherwise a step can narrate an
   // edge the reader has hidden, and the diagram silently disagrees with itself.
   const steps = flowSteps();
@@ -927,6 +970,9 @@ function edgeActive(e) {
 /* A node is greyed out only when the modes make it genuinely unused. */
 function nodeActive(n) {
   if (n.id === "query-scheduler" && state.feMode !== "v2") return false;
+  // The Configs API exists to serve ruler and alertmanager configs. With the
+  // object-storage backends it serves nothing, so it and its database recede.
+  if ((n.id === "configs" || n.id === "postgres") && state.configStore !== "configdb") return false;
   return true;
 }
 
@@ -1126,6 +1172,15 @@ d3.selectAll("#ruler-mode button").on("click", function () {
   restore(); apply();
 });
 
+d3.selectAll("#config-store button").on("click", function () {
+  state.configStore = this.dataset.mode;
+  d3.selectAll("#config-store button").attr("aria-pressed", function () {
+    return this.dataset.mode === state.configStore;
+  });
+  state.flowStep = 0;
+  restore(); apply();
+});
+
 function renderFlowButtons() {
   const wrap = d3.select("#flows");
   const btns = wrap.selectAll("button.flow").data(FLOWS, d => d.id);
@@ -1217,6 +1272,7 @@ function buildTables() {
         e.endpoint,
         e.mode ? "frontend " + e.mode
           : e.rulerMode ? "ruler: " + (e.rulerMode === "own" ? "own querier stack" : "via query-frontend")
+          : e.configStore ? "config store: " + (e.configStore === "objstore" ? "object storage" : "Configs API")
           : "always",
         e.note,
       ])

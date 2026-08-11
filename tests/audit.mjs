@@ -133,11 +133,20 @@ for (const e of EDGES) {
 }
 for (const [key, users] of anchors) {
   if (users.length < 2) continue;
-  const modes = users.map(u => {
+  const gates = users.map(u => {
     const e = EDGES.find(x => x.id === u.split(":")[0]);
-    return e.mode || e.rulerMode || "always";
+    if (e.mode) return ["mode", e.mode];
+    if (e.rulerMode) return ["rulerMode", e.rulerMode];
+    if (e.configStore) return ["configStore", e.configStore];
+    return ["ungated", "ungated"];
   });
-  const exclusive = new Set(modes).size === modes.length && !modes.includes("always");
+  // Sharing an anchor is only safe when every edge is gated on the *same*
+  // dimension with a *different* value, so at most one is ever drawn. Two edges
+  // gated on different dimensions (say frontend v1 and config store configdb)
+  // can both be visible at once, and would overlap.
+  const dims = new Set(gates.map(g => g[0]));
+  const vals = new Set(gates.map(g => g[1]));
+  const exclusive = dims.size === 1 && !dims.has("ungated") && vals.size === gates.length;
   if (!exclusive) warn("anchor-collision", `${key} shared by ${users.join(", ")}`);
 }
 
@@ -161,12 +170,38 @@ if (eids.size !== EDGES.length) warn("bad-ref", "duplicate edge id");
 for (const f of FLOWS) {
   for (const feMode of ["v1", "v2"]) {
     for (const rulerMode of ["own", "frontend"]) {
-      for (const [eid, text] of f.steps({ feMode, rulerMode })) {
-        if (!eids.has(eid)) {
-          warn("bad-ref", `flow ${f.id} (${feMode}/${rulerMode}) references unknown edge ${eid}`);
+      for (const configStore of ["objstore", "configdb"]) {
+        for (const [eid, text] of f.steps({ feMode, rulerMode, configStore })) {
+          if (!eids.has(eid)) {
+            warn("bad-ref",
+              `flow ${f.id} (${feMode}/${rulerMode}/${configStore}) references unknown edge ${eid}`);
+          }
+          if (!text || text.length < 20) {
+            warn("missing-meta", `flow ${f.id} step ${eid} has no usable narration`);
+          }
         }
-        if (!text || text.length < 20) {
-          warn("missing-meta", `flow ${f.id} step ${eid} has no usable narration`);
+      }
+    }
+  }
+}
+
+// 7b. a flow step must reference an edge that is actually visible in the mode
+// combination that produced it -- otherwise the narration points at nothing.
+for (const f of FLOWS) {
+  for (const feMode of ["v1", "v2"]) {
+    for (const rulerMode of ["own", "frontend"]) {
+      for (const configStore of ["objstore", "configdb"]) {
+        for (const [eid] of f.steps({ feMode, rulerMode, configStore })) {
+          const e = EDGES.find(x => x.id === eid);
+          if (!e) continue;
+          const gated =
+            (e.mode && e.mode !== feMode) ||
+            (e.rulerMode && e.rulerMode !== rulerMode) ||
+            (e.configStore && e.configStore !== configStore);
+          if (gated) {
+            warn("flow-gated",
+              `flow ${f.id} in ${feMode}/${rulerMode}/${configStore} narrates ${eid}, which those modes hide`);
+          }
         }
       }
     }
@@ -243,11 +278,13 @@ if (process.argv.includes("--snapshot")) {
     o.push("</defs>");
     for (const l of LANES) {
       o.push(`<rect x="${l.x0}" y="${l.y0}" width="${l.x1 - l.x0}" height="${l.y1 - l.y0}" rx="12" fill="${t.lane}"/>`);
-      o.push(`<text x="${l.inside ? l.x1 - 14 : l.x0 + 12}" y="${l.inside ? l.y0 + 17 : l.y0 - 9}" text-anchor="${l.inside ? "end" : "start"}" fill="${t.sub}" font-family="system-ui" font-size="10.5" font-weight="600" letter-spacing="0.8">${xml(l.label.toUpperCase())}</text>`);
+      o.push(`<text x="${l.x0 + 12}" y="${l.inside ? l.y1 - 9 : l.y0 - 9}" fill="${t.sub}" font-family="system-ui" font-size="10.5" font-weight="600" letter-spacing="0.8">${xml(l.label.toUpperCase())}</text>`);
     }
     for (const e of EDGES) {
-      if (e.mode && e.mode !== "v2") continue;      // snapshot the page's defaults
+      // Snapshot the page's default modes, so the image matches a fresh load.
+      if (e.mode && e.mode !== "v2") continue;
       if (e.rulerMode && e.rulerMode !== "own") continue;
+      if (e.configStore && e.configStore !== "objstore") continue;
       o.push(`<path d="${polyline(points(e))}" fill="none" stroke="${t[e.path]}" stroke-width="${e.path === "ring" ? 1 : 2}" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-${e.path})"/>`);
     }
     for (const n of NODES) {
