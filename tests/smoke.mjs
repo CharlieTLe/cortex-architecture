@@ -169,12 +169,43 @@ click([...q("#ruler-mode button")].find(b => b.dataset.mode === "own"));
 ok("own-stack mode restores the direct reads", shown("ruler>ing") && shown("ruler>sg"));
 ok("own-stack mode hides the frontend hop", !shown("ruler>qf"));
 
-/* ---- metadata cache ------------------------------------------------------ */
-// Three consumers, which is the whole point of showing it separately.
-ok("all three metadata-cache consumers are wired",
-  shown("qr>mcache") && shown("sg>mcache") && shown("comp>mcache"));
-ok("the metadata cache is a distinct component from the chunk cache",
-  !!one('g.node[data-id="metadata-cache"]') && !!one('g.node[data-id="chunk-cache"]'));
+/* ---- caches ------------------------------------------------------------- */
+// Seven caches, deliberately not one box: their consumer sets all differ.
+for (const id of ["results-cache", "metadata-cache", "chunks-cache", "index-cache",
+                  "parquet-labels-cache", "parquet-rows-cache", "epc"]) {
+  ok(`${id} is its own component`, !!one(`g.node[data-id="${id}"]`));
+}
+ok("the metadata cache has all three consumers wired",
+  shown("qr>metadata") && shown("sg>metadata") && shown("comp>metadata"));
+ok("the chunks cache has both consumers wired",
+  shown("qr>chunks") && shown("sg>chunks"));
+ok("the index cache has exactly one consumer",
+  shown("sg>index") &&
+  [...q("g.edge")].filter(e => e.dataset.id.endsWith(">index")).length === 1);
+ok("the results cache belongs to the query-frontend only", shown("qf>rcache"));
+// The expanded postings cache is in-process in the ingester, so it must not be
+// drawn in the cache column with a network hop implied.
+const epc = one('g.node[data-id="epc"] rect');
+ok("expanded postings sits beside the ingester, not in the cache column",
+  Number(epc.getAttribute("x")) < 600, `x=${epc.getAttribute("x")}`);
+ok("expanded postings is fed by the ingester", shown("ing>epc"));
+
+/* ---- parquet queryable toggle ------------------------------------------- */
+ok("parquet caches are hidden by default",
+  !shown("qr>plabels") && !shown("qr>prows") && !shown("sg>plabels") && !shown("sg>prows"));
+ok("parquet components recede by default",
+  cls('g.node[data-id="parquet-labels-cache"]').includes("dim") &&
+  cls('g.node[data-id="parquet-rows-cache"]').includes("dim") &&
+  cls('g.node[data-id="parquet"]').includes("dim"));
+click([...q("#parquet-mode button")].find(b => b.dataset.mode === "on"));
+ok("enabling parquet wires both caches to both consumers",
+  shown("qr>plabels") && shown("qr>prows") && shown("sg>plabels") && shown("sg>prows"));
+ok("enabling parquet lights up the converter and its caches",
+  !cls('g.node[data-id="parquet-labels-cache"]').includes("dim") &&
+  !cls('g.node[data-id="parquet"]').includes("dim") && shown("pq>obj"));
+click([...q("#parquet-mode button")].find(b => b.dataset.mode === "off"));
+ok("disabling parquet hides them again",
+  !shown("qr>plabels") && !shown("pq>obj"));
 
 /* ---- selection panel ---------------------------------------------------- */
 const panel = one("#panel");

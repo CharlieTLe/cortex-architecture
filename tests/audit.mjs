@@ -137,6 +137,7 @@ for (const [key, users] of anchors) {
     const e = EDGES.find(x => x.id === u.split(":")[0]);
     if (e.mode) return ["mode", e.mode];
     if (e.rulerMode) return ["rulerMode", e.rulerMode];
+    if (e.parquet) return ["parquet", e.parquet];
     return ["ungated", "ungated"];
   });
   // Sharing an anchor is only safe when every edge is gated on the *same*
@@ -147,6 +148,48 @@ for (const [key, users] of anchors) {
   const vals = new Set(gates.map(g => g[1]));
   const exclusive = dims.size === 1 && !dims.has("ungated") && vals.size === gates.length;
   if (!exclusive) warn("anchor-collision", `${key} shared by ${users.join(", ")}`);
+}
+
+// 5b. two edges must not share a colinear overlapping run. Where several
+// connectors converge on one column, it is easy to route two of them down the
+// same corridor, and one is then invisible underneath the other.
+function segments(e) {
+  const pts = points(e);
+  const out = [];
+  for (let i = 0; i < pts.length - 1; i++) {
+    const [x1, y1] = pts[i];
+    const [x2, y2] = pts[i + 1];
+    if (Math.abs(x1 - x2) < 0.5 && Math.abs(y1 - y2) > 1) {
+      out.push({ dir: "v", at: x1, lo: Math.min(y1, y2), hi: Math.max(y1, y2) });
+    } else if (Math.abs(y1 - y2) < 0.5 && Math.abs(x1 - x2) > 1) {
+      out.push({ dir: "h", at: y1, lo: Math.min(x1, x2), hi: Math.max(x1, x2) });
+    }
+  }
+  return out;
+}
+const canCoexist = (a, b) => {
+  // Two edges can only overlap in practice if some mode combination shows both.
+  for (const k of ["mode", "rulerMode", "parquet"]) {
+    if (a[k] && b[k] && a[k] !== b[k]) return false;
+  }
+  return true;
+};
+const segCache = EDGES.map(e => ({ e, segs: segments(e) }));
+for (let i = 0; i < segCache.length; i++) {
+  for (let j = i + 1; j < segCache.length; j++) {
+    const A = segCache[i], B = segCache[j];
+    if (!canCoexist(A.e, B.e)) continue;
+    for (const s of A.segs) {
+      for (const t of B.segs) {
+        if (s.dir !== t.dir || Math.abs(s.at - t.at) > 0.5) continue;
+        const overlap = Math.min(s.hi, t.hi) - Math.max(s.lo, t.lo);
+        if (overlap > 6) {
+          warn("colinear-overlap",
+            `${A.e.id} and ${B.e.id} share a ${overlap.toFixed(0)}px ${s.dir === "v" ? "vertical" : "horizontal"} run at ${s.at.toFixed(0)}`);
+        }
+      }
+    }
+  }
 }
 
 // 6. referential integrity, and every panel field populated
@@ -191,7 +234,8 @@ for (const f of FLOWS) {
         if (!e) continue;
         const gated =
           (e.mode && e.mode !== feMode) ||
-          (e.rulerMode && e.rulerMode !== rulerMode);
+          (e.rulerMode && e.rulerMode !== rulerMode) ||
+          (e.parquet && e.parquet !== "off");
         if (gated) {
           warn("flow-gated",
             `flow ${f.id} in ${feMode}/${rulerMode} narrates ${eid}, which those modes hide`);
@@ -277,6 +321,7 @@ if (process.argv.includes("--snapshot")) {
       // Snapshot the page's default modes, so the image matches a fresh load.
       if (e.mode && e.mode !== "v2") continue;
       if (e.rulerMode && e.rulerMode !== "own") continue;
+      if (e.parquet && e.parquet !== "off") continue;
       o.push(`<path d="${polyline(points(e))}" fill="none" stroke="${t[e.path]}" stroke-width="${e.path === "ring" ? 1 : 2}" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-${e.path})"/>`);
     }
     for (const n of NODES) {

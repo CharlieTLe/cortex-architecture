@@ -29,14 +29,27 @@ the **OTLP ingest** endpoint, the **HA tracker**, and the **parquet-converter**
   own queue. These are genuinely different graphs, not a cosmetic variant.
 - **Toggle the ruler's two evaluation modes** — its own querier stack, or via the
   query-frontend with `-ruler.frontend-address`.
+- **Toggle the parquet queryable** — off by default. Turning it on wires up the
+  two parquet caches and the parquet-converter, which have no purpose without it.
 - **Walk a flow** — write, read, rule evaluation, blocks lifecycle, one hop at a time.
 - **Table view** — every component and connection as text.
 - **Light and dark**, following the OS with an override.
 
-The caches are shown as three separate components because their consumers differ:
-the results cache belongs to the query-frontend, the index and chunks caches to
-the store-gateway (and the chunks cache to the querier), and the **metadata cache**
-is shared by the querier, the store-gateway *and* the compactor.
+All seven caches are drawn separately, because no two have the same consumers:
+
+| Cache | Used by |
+|---|---|
+| Results cache | query-frontend |
+| Metadata cache | querier, store-gateway, **compactor** |
+| Chunks cache | querier, store-gateway |
+| Index cache | store-gateway only |
+| Parquet labels / rows | querier, store-gateway's parquet stores (parquet queryable only) |
+| Expanded postings | ingester — **in-process**, no memcached behind it |
+
+The expanded postings cache sits beside the ingester rather than in the cache
+column precisely because it is in-process: drawing it on the right would imply a
+network hop that does not exist. It is also configured apart from the others,
+under `blocks-storage.tsdb.*` rather than `bucket-store.*`.
 
 ## Running it locally
 

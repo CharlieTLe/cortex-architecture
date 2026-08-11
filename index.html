@@ -324,6 +324,14 @@
     </div>
 
     <div class="group">
+      <span class="label" id="lbl-pq">Parquet queryable</span>
+      <div class="seg" id="parquet-mode" role="group" aria-labelledby="lbl-pq">
+        <button type="button" data-mode="off" aria-pressed="true">Off</button>
+        <button type="button" data-mode="on" aria-pressed="false">On</button>
+      </div>
+    </div>
+
+    <div class="group">
       <span class="label" id="lbl-flow">Walk a flow</span>
       <div class="chips" id="flows" role="group" aria-labelledby="lbl-flow"></div>
     </div>
@@ -340,7 +348,7 @@
 
   <div class="stage">
     <div class="canvas">
-      <svg class="diagram" id="svg" viewBox="0 0 1300 900"
+      <svg class="diagram" id="svg" viewBox="0 0 1380 900"
            preserveAspectRatio="xMidYMid meet" role="img"
            aria-label="Node-link diagram of Cortex components and the data flows between them.
                        An equivalent table is available via the table view toggle."></svg>
@@ -391,8 +399,8 @@ const LANES = [
   { x0: 300,  x1: 570,  y0: 50, y1: 700, label: "Write path" },
   { x0: 590,  x1: 800,  y0: 50, y1: 700, label: "Hash ring" },
   { x0: 820,  x1: 1090, y0: 50, y1: 700, label: "Read path" },
-  { x0: 1105, x1: 1270, y0: 50, y1: 700, label: "Caches" },
-  { x0: 40,   x1: 1270, y0: 752, y1: 848, label: "Object storage & blocks lifecycle", inside: true },
+  { x0: 1168, x1: 1345, y0: 50, y1: 700, label: "Caches" },
+  { x0: 40,   x1: 1345, y0: 752, y1: 848, label: "Object storage & blocks lifecycle", inside: true },
 ];
 
 const NODES = [
@@ -483,6 +491,34 @@ const NODES = [
     detail: "The Prometheus Alertmanager plus multi-tenancy. Silences and active alerts are persisted to disk and gossiped between replicas, so a simultaneous loss of every replica loses data.",
     endpoints: ["gRPC Alertmanager.HandleRequest / UpdateState / ReadState", "GET /multitenant_alertmanager/ring"] },
   /* ---- infrastructure ---- */
+  { id: "results-cache", label: "Results cache", sub: "memcached · redis",
+    cat: "infra", x: 1255, y: 215, w: 150,
+    role: "Caches query-frontend results, so a repeated or overlapping query does not re-run.",
+    detail: "Configured with the frontend rather than the bucket store (-query-range.results-cache), and used only by the query-frontend. Step-aligning queries is what makes the results reusable across requests." },
+  { id: "metadata-cache", label: "Metadata cache", sub: "meta.json · listings",
+    cat: "infra", x: 1255, y: 307, w: 150,
+    role: "Caches the bucket's metadata operations, so working out which blocks exist does not mean listing object storage over and over.",
+    detail: "The most widely shared of the caches: the querier, the store-gateway and the compactor all use it. Holds meta.json content, existence and attributes, the block index's attributes, the bucket index, and the tenant, block and chunk listings — plus the compactor's partitioned-group listings. The bucket index is cached by content only: its existence deliberately is not, so a freshly written index gets picked up promptly. -blocks-storage.bucket-store.metadata-cache" },
+  { id: "chunks-cache", label: "Chunks cache", sub: "chunk ranges",
+    cat: "infra", x: 1255, y: 391, w: 150,
+    role: "Caches ranges of bytes out of the chunk files, so fetching samples for a series does not always reach object storage.",
+    detail: "Shared by the store-gateway and the querier. Fetches are split into fixed-size subranges so neighbouring queries reuse the same cached pieces. -blocks-storage.bucket-store.chunks-cache" },
+  { id: "parquet-labels-cache", label: "Parquet labels", sub: "labels file", parquet: "on",
+    cat: "infra", x: 1255, y: 475, w: 150,
+    role: "Caches byte ranges of the parquet labels file for the parquet queryable.",
+    detail: "Only used when the parquet queryable is enabled (-querier.enable-parquet-queryable), by the querier and by the store-gateway's parquet bucket stores. The plain store-gateway path passes an empty config for it. -blocks-storage.bucket-store.parquet-labels-cache" },
+  { id: "parquet-rows-cache", label: "Parquet rows", sub: "row ranges", parquet: "on",
+    cat: "infra", x: 1255, y: 559, w: 150,
+    role: "Caches which parquet row ranges satisfy a query, so the same predicate need not be re-resolved.",
+    detail: "Like the labels cache, only in play with the parquet queryable, and used by both the querier and the store-gateway's parquet stores. Unlike the others it is not layered into the caching bucket — it is used directly. -blocks-storage.bucket-store.parquet-row-ranges-cache" },
+  { id: "index-cache", label: "Index cache", sub: "postings · series",
+    cat: "infra", x: 1255, y: 643, w: 150,
+    role: "Caches TSDB index lookups — postings, series and expanded postings — for the blocks a store-gateway owns.",
+    detail: "The only cache here used by exactly one component: the store-gateway. It is a Thanos index cache held inside the store rather than a wrapper around the bucket, which is why the querier has no link to it. -blocks-storage.bucket-store.index-cache" },
+  { id: "epc", label: "Expanded postings", sub: "in-process, per tenant",
+    cat: "infra", x: 435, y: 590, w: 170, optional: true, beyondDocs: true,
+    role: "Caches expanded postings inside the ingester, so repeated queries against the in-memory head do not re-resolve the same matchers.",
+    detail: "Unlike every other cache here this one is in-process and per-tenant — there is no memcached or redis behind it and no network hop, which is why it is drawn beside the ingester rather than in the cache column. Head and compacted blocks are configured separately. Experimental, and configured under blocks-storage.tsdb.expanded_postings_cache rather than with the bucket-store caches." },
   { id: "kv", label: "Ring KV store", sub: "Consul · etcd · memberlist",
     cat: "infra", x: 695, y: 340, w: 190,
     role: "Holds the hash rings. Instances register tokens — random 32-bit numbers — and a series is owned by the smallest token above its hash, plus the next replication-factor-minus-one tokens on distinct instances.",
@@ -491,17 +527,6 @@ const NODES = [
     cat: "infra", x: 695, y: 800, w: 220,
     role: "Holds TSDB blocks and the bucket index, plus ruler rule groups and alertmanager configuration and state.",
     detail: "Blocks live under <tenant>/<ULID>/, rule groups under rules/<tenant>/, alertmanager configs under alerts/<tenant>. The local filesystem backend is single-node only." },
-  { id: "results-cache", label: "Results cache", sub: "memcached · redis",
-    cat: "infra", x: 1187, y: 215, w: 150,
-    role: "Caches query-frontend results. Step-aligning queries makes them far more cacheable." },
-  { id: "chunk-cache", label: "Index & chunks", sub: "postings · chunks",
-    cat: "infra", x: 1187, y: 590, w: 150,
-    role: "Two caches sitting in front of the blocks: the index cache holds postings and series, the chunks cache holds chunk byte ranges.",
-    detail: "The index cache is store-gateway only (-blocks-storage.bucket-store.index-cache). The chunks cache is shared — the querier configures it too, alongside the parquet-labels cache when the parquet queryable is enabled." },
-  { id: "metadata-cache", label: "Metadata cache", sub: "meta.json · listings",
-    cat: "infra", x: 1187, y: 400, w: 150,
-    role: "Caches the bucket's metadata operations, so working out which blocks exist does not mean listing object storage over and over.",
-    detail: "Holds meta.json content, existence and attributes, the block index's attributes, the bucket index, and the tenant, block and chunk listings — plus the compactor's partitioned-group listings. Configured under -blocks-storage.bucket-store.metadata-cache; backends are in-memory, memcached or redis, and can be stacked into levels. The bucket index is cached by content only: its existence deliberately is not, so a freshly written index gets picked up promptly." },
 ];
 
 /* Edges. `route` is a list of explicit waypoints between the two anchor
@@ -538,8 +563,8 @@ const EDGES = [
     protocol: "gRPC", endpoint: "SchedulerForQuerier.QuerierLoop",
     note: "The querier dials the scheduler and pulls work. The scheduler never dials the querier." },
   { id: "qf>qr", from: "query-frontend", to: "querier", path: "read",
-    fromSide: "bottom", toSide: "right", toOff: -13,
-    route: [[955, 272], [1075, 272], [1075, 452]], mode: "v1",
+    fromSide: "bottom", toSide: "top", toOff: 45,
+    route: [[955, 272], [1075, 272], [1075, 410], [1000, 410]], mode: "v1",
     protocol: "gRPC", endpoint: "Frontend.Process",
     note: "v1 frontend: the queue lives in the frontend itself and the querier pulls from it over a bidirectional stream." },
   { id: "qr>qf", from: "querier", to: "query-frontend", path: "read",
@@ -569,14 +594,11 @@ const EDGES = [
     route: [[272, 451], [272, 150], [900, 150]], rulerMode: "frontend",
     protocol: "gRPC", endpoint: "-ruler.frontend-address",
     note: "With -ruler.frontend-address the ruler queries the frontend instead, so rule evaluation benefits from splitting and result caching." },
-  { id: "qf>rcache", from: "query-frontend", to: "results-cache", path: "read",
-    fromSide: "right", toSide: "left",
-    protocol: "memcached / redis", endpoint: "read + write",
-    note: "Split-by-interval subquery results, step-aligned to improve the hit rate." },
 
   /* ---- blocks ---- */
   { id: "ing>obj", from: "ingester", to: "objstore", path: "blocks",
-    fromSide: "bottom", toSide: "top", toOff: -30, route: [[435, 712], [665, 712]],
+    fromSide: "right", fromOff: 13, toSide: "top", toOff: -30,
+    route: [[560, 478], [560, 712], [665, 712]],
     protocol: "Thanos shipper", endpoint: "<tenant>/<ULID>/",
     note: "Completed TSDB blocks are shipped roughly every 2 hours, which is why queriers must merge ingesters with long-term storage." },
   { id: "qr>obj", from: "querier", to: "objstore", path: "blocks",
@@ -593,7 +615,7 @@ const EDGES = [
     protocol: "object storage API", endpoint: "read + write",
     note: "Reads source blocks, writes compacted ones, maintains bucket-index.json.gz, and deletes what it has superseded." },
   { id: "pq>obj", from: "parquet", to: "objstore", path: "blocks",
-    fromSide: "left", toSide: "right",
+    fromSide: "left", toSide: "right", parquet: "on",
     protocol: "object storage API", endpoint: "read + write",
     note: "Downloads TSDB blocks and writes parquet shards beside them." },
   { id: "ruler>obj", from: "ruler", to: "objstore", path: "blocks",
@@ -606,25 +628,69 @@ const EDGES = [
     route: [[48, 215], [48, 746], [605, 746]],
     protocol: "object storage API", endpoint: "alerts/<tenant> · alertmanager/<tenant>/",
     note: "Per-tenant configuration, plus full and gossiped notification state." },
-  { id: "qr>mcache", from: "querier", to: "metadata-cache", path: "blocks",
-    fromSide: "top", fromOff: 55, toSide: "left",
-    route: [[1010, 400]],
-    protocol: "memcached / redis", endpoint: "read + write",
-    note: "Block metadata and the bucket index, so planning a query does not mean re-listing the bucket." },
-  { id: "sg>mcache", from: "store-gateway", to: "metadata-cache", path: "blocks",
-    fromSide: "right", fromOff: -13, toSide: "left", toOff: 13,
-    route: [[1092, 577], [1092, 413]],
-    protocol: "memcached / redis", endpoint: "read + write",
-    note: "The store-gateway shares this cache with the querier and the compactor — all three discover blocks through it." },
-  { id: "comp>mcache", from: "compactor", to: "metadata-cache", path: "blocks",
-    fromSide: "bottom", toSide: "right",
-    route: [[400, 868], [1285, 868], [1285, 400]],
-    protocol: "memcached / redis", endpoint: "read + write",
-    note: "The compactor and its blocks cleaner cache tenant and block listings, meta.json attributes, and partitioned-group listings." },
-  { id: "sg>ccache", from: "store-gateway", to: "chunk-cache", path: "blocks",
+
+  { id: "qf>rcache", from: "query-frontend", to: "results-cache", path: "read",
     fromSide: "right", toSide: "left",
     protocol: "memcached / redis", endpoint: "read + write",
-    note: "Index-header and chunk caching. The bucket index itself is deliberately excluded from this cache." },
+    note: "Split-by-interval subquery results, step-aligned to improve the hit rate." },
+
+  { id: "qr>metadata", from: "querier", to: "metadata-cache", path: "blocks",
+    fromSide: "right", fromOff: -16, toSide: "left", toOff: -10,
+    route: [[1054, 449], [1054, 297]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Block metadata and the bucket index, so planning a query does not mean re-listing the bucket." },
+  { id: "qr>chunks", from: "querier", to: "chunks-cache", path: "blocks",
+    fromSide: "right", fromOff: -7, toSide: "left", toOff: -7,
+    route: [[1068, 458], [1068, 384]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Chunk byte ranges for series the querier reads straight out of the bucket." },
+  { id: "qr>plabels", from: "querier", to: "parquet-labels-cache", path: "blocks",
+    fromSide: "right", fromOff: 11, toSide: "left", toOff: -7, parquet: "on",
+    route: [[1082, 476], [1082, 468]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Only with -querier.enable-parquet-queryable: byte ranges of the parquet labels file." },
+  { id: "qr>prows", from: "querier", to: "parquet-rows-cache", path: "blocks",
+    fromSide: "right", fromOff: 2, toSide: "left", toOff: -7, parquet: "on",
+    route: [[1096, 467], [1096, 552]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Only with the parquet queryable: which row ranges satisfy a predicate." },
+
+  { id: "sg>metadata", from: "store-gateway", to: "metadata-cache", path: "blocks",
+    fromSide: "right", fromOff: -17, toSide: "left", toOff: 4,
+    route: [[1110, 573], [1110, 311]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "The store-gateway shares this cache with the querier and the compactor — all three discover blocks through it." },
+  { id: "sg>chunks", from: "store-gateway", to: "chunks-cache", path: "blocks",
+    fromSide: "right", fromOff: -9, toSide: "left", toOff: 7,
+    route: [[1124, 581], [1124, 398]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Chunk byte ranges for the blocks this store-gateway owns." },
+  { id: "sg>plabels", from: "store-gateway", to: "parquet-labels-cache", path: "blocks",
+    fromSide: "right", fromOff: -1, toSide: "left", toOff: 7, parquet: "on",
+    route: [[1138, 589], [1138, 482]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Used by the store-gateway's parquet bucket stores, which only exist with the parquet queryable enabled." },
+  { id: "sg>prows", from: "store-gateway", to: "parquet-rows-cache", path: "blocks",
+    fromSide: "right", fromOff: 7, toSide: "left", toOff: 7, parquet: "on",
+    route: [[1152, 597], [1152, 566]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Row-range results for the store-gateway's parquet path." },
+  { id: "sg>index", from: "store-gateway", to: "index-cache", path: "blocks",
+    fromSide: "right", fromOff: 15, toSide: "left",
+    route: [[1166, 605], [1166, 643]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "Postings and series lookups. The only cache with a single consumer — the querier never reads the index cache." },
+
+  { id: "comp>metadata", from: "compactor", to: "metadata-cache", path: "blocks",
+    fromSide: "bottom", toSide: "right", toOff: 10,
+    route: [[400, 868], [1362, 868], [1362, 317]],
+    protocol: "memcached / redis", endpoint: "read + write",
+    note: "The compactor and its blocks cleaner cache tenant and block listings, meta.json attributes, and partitioned-group listings." },
+
+  { id: "ing>epc", from: "ingester", to: "epc", path: "read",
+    fromSide: "bottom", toSide: "top",
+    protocol: "in-process", endpoint: "expanded postings",
+    note: "No network hop: the cache lives inside the ingester process, per tenant, for the head and for compacted blocks." },
 
   /* ---- ring participation & control ---- */
   { id: "dist>kv", from: "distributor", to: "kv", path: "ring", straight: true,
@@ -637,7 +703,7 @@ const EDGES = [
     protocol: "KV", endpoint: "collectors/store-gateway", note: "Block sharding across store-gateways." },
   { id: "comp>kv", from: "compactor", to: "kv", path: "ring", straight: true,
     protocol: "KV", endpoint: "collectors/compactor", note: "Splits tenants across compactor replicas." },
-  { id: "pq>kv", from: "parquet", to: "kv", path: "ring", straight: true,
+  { id: "pq>kv", from: "parquet", to: "kv", path: "ring", straight: true, parquet: "on",
     protocol: "KV", endpoint: "collectors/parquet-converter", note: "Shards conversion work." },
   { id: "ruler>kv", from: "ruler", to: "kv", path: "ring", straight: true,
     protocol: "KV", endpoint: "rulers/ring", note: "Decides which ruler owns which rule group." },
@@ -692,8 +758,8 @@ const FLOWS = [
       ["comp>obj", "The compactor merges small blocks into larger ones, dropping replicated duplicates, shrinking the index, and refreshing the per-tenant bucket index."],
       ["sg>obj",   "Store-gateways discover the blocks in their shard — from that bucket index, or by scanning the bucket — and lazily load index-headers and chunks."],
       ["qr>obj",   "Queriers read the same bucket index to plan which blocks a query needs."],
-      ["sg>mcache", "Block discovery goes through the metadata cache rather than re-listing the bucket — the querier, the store-gateway and the compactor all share it."],
-      ["sg>ccache", "Store-gateways cache index-headers and chunks so repeated queries avoid the object store entirely."],
+      ["sg>metadata", "Block discovery goes through the metadata cache rather than re-listing the bucket — the querier, the store-gateway and the compactor all share it."],
+      ["sg>chunks", "Chunk byte ranges are cached too, so repeated queries over the same series avoid the object store entirely."],
     ] },
 ];
 
@@ -720,6 +786,7 @@ const PATH_LABEL = {
 const state = {
   feMode: "v2",
   rulerMode: "own",
+  parquet: "off",
   visible: new Set(["write", "read", "blocks", "ring"]),
   selected: null,
   hovered: null,
@@ -926,6 +993,7 @@ function flowSteps() {
 function edgeActive(e) {
   if (e.mode && e.mode !== state.feMode) return false;
   if (e.rulerMode && e.rulerMode !== state.rulerMode) return false;
+  if (e.parquet && e.parquet !== state.parquet) return false;
   // A walkthrough overrides the filter row: otherwise a step can narrate an
   // edge the reader has hidden, and the diagram silently disagrees with itself.
   const steps = flowSteps();
@@ -936,6 +1004,10 @@ function edgeActive(e) {
 /* A node is greyed out only when the modes make it genuinely unused. */
 function nodeActive(n) {
   if (n.id === "query-scheduler" && state.feMode !== "v2") return false;
+  // The parquet caches and the converter that feeds them are only in play with
+  // -querier.enable-parquet-queryable.
+  if (n.parquet && n.parquet !== state.parquet) return false;
+  if (n.id === "parquet" && state.parquet !== "on") return false;
   return true;
 }
 
@@ -1126,6 +1198,15 @@ d3.selectAll("#fe-mode button").on("click", function () {
   restore(); apply();
 });
 
+d3.selectAll("#parquet-mode button").on("click", function () {
+  state.parquet = this.dataset.mode;
+  d3.selectAll("#parquet-mode button").attr("aria-pressed", function () {
+    return this.dataset.mode === state.parquet;
+  });
+  state.flowStep = 0;
+  restore(); apply();
+});
+
 d3.selectAll("#ruler-mode button").on("click", function () {
   state.rulerMode = this.dataset.mode;
   d3.selectAll("#ruler-mode button").attr("aria-pressed", function () {
@@ -1226,6 +1307,7 @@ function buildTables() {
         e.endpoint,
         e.mode ? "frontend " + e.mode
           : e.rulerMode ? "ruler: " + (e.rulerMode === "own" ? "own querier stack" : "via query-frontend")
+          : e.parquet ? "parquet queryable " + e.parquet
           : "always",
         e.note,
       ])
