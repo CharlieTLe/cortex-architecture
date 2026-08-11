@@ -137,7 +137,6 @@ for (const [key, users] of anchors) {
     const e = EDGES.find(x => x.id === u.split(":")[0]);
     if (e.mode) return ["mode", e.mode];
     if (e.rulerMode) return ["rulerMode", e.rulerMode];
-    if (e.configStore) return ["configStore", e.configStore];
     return ["ungated", "ungated"];
   });
   // Sharing an anchor is only safe when every edge is gated on the *same*
@@ -170,15 +169,12 @@ if (eids.size !== EDGES.length) warn("bad-ref", "duplicate edge id");
 for (const f of FLOWS) {
   for (const feMode of ["v1", "v2"]) {
     for (const rulerMode of ["own", "frontend"]) {
-      for (const configStore of ["objstore", "configdb"]) {
-        for (const [eid, text] of f.steps({ feMode, rulerMode, configStore })) {
-          if (!eids.has(eid)) {
-            warn("bad-ref",
-              `flow ${f.id} (${feMode}/${rulerMode}/${configStore}) references unknown edge ${eid}`);
-          }
-          if (!text || text.length < 20) {
-            warn("missing-meta", `flow ${f.id} step ${eid} has no usable narration`);
-          }
+      for (const [eid, text] of f.steps({ feMode, rulerMode })) {
+        if (!eids.has(eid)) {
+          warn("bad-ref", `flow ${f.id} (${feMode}/${rulerMode}) references unknown edge ${eid}`);
+        }
+        if (!text || text.length < 20) {
+          warn("missing-meta", `flow ${f.id} step ${eid} has no usable narration`);
         }
       }
     }
@@ -190,18 +186,15 @@ for (const f of FLOWS) {
 for (const f of FLOWS) {
   for (const feMode of ["v1", "v2"]) {
     for (const rulerMode of ["own", "frontend"]) {
-      for (const configStore of ["objstore", "configdb"]) {
-        for (const [eid] of f.steps({ feMode, rulerMode, configStore })) {
-          const e = EDGES.find(x => x.id === eid);
-          if (!e) continue;
-          const gated =
-            (e.mode && e.mode !== feMode) ||
-            (e.rulerMode && e.rulerMode !== rulerMode) ||
-            (e.configStore && e.configStore !== configStore);
-          if (gated) {
-            warn("flow-gated",
-              `flow ${f.id} in ${feMode}/${rulerMode}/${configStore} narrates ${eid}, which those modes hide`);
-          }
+      for (const [eid] of f.steps({ feMode, rulerMode })) {
+        const e = EDGES.find(x => x.id === eid);
+        if (!e) continue;
+        const gated =
+          (e.mode && e.mode !== feMode) ||
+          (e.rulerMode && e.rulerMode !== rulerMode);
+        if (gated) {
+          warn("flow-gated",
+            `flow ${f.id} in ${feMode}/${rulerMode} narrates ${eid}, which those modes hide`);
         }
       }
     }
@@ -284,7 +277,6 @@ if (process.argv.includes("--snapshot")) {
       // Snapshot the page's default modes, so the image matches a fresh load.
       if (e.mode && e.mode !== "v2") continue;
       if (e.rulerMode && e.rulerMode !== "own") continue;
-      if (e.configStore && e.configStore !== "objstore") continue;
       o.push(`<path d="${polyline(points(e))}" fill="none" stroke="${t[e.path]}" stroke-width="${e.path === "ring" ? 1 : 2}" stroke-linecap="round" stroke-linejoin="round" marker-end="url(#a-${e.path})"/>`);
     }
     for (const n of NODES) {

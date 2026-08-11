@@ -29,10 +29,6 @@ the **OTLP ingest** endpoint, the **HA tracker**, and the **parquet-converter**
   own queue. These are genuinely different graphs, not a cosmetic variant.
 - **Toggle the ruler's two evaluation modes** — its own querier stack, or via the
   query-frontend with `-ruler.frontend-address`.
-- **Toggle where rule and alert configs come from** — object storage, or the
-  deprecated Configs API via the `configdb` backend. Also mutually exclusive: with
-  `configdb` both stores are read-only, and the Alertmanager cannot persist its
-  state at all.
 - **Walk a flow** — write, read, rule evaluation, blocks lifecycle, one hop at a time.
 - **Table view** — every component and connection as text.
 - **Light and dark**, following the OS with an override.
